@@ -58,7 +58,10 @@ export async function migrateSchema(args: {
       invalidConnectors,
       validateOnly,
     );
-    if (!shouldDeleteInvalidConnectors && invalidConnectors.length) {
+    if (!shouldDeleteInvalidConnectors && invalidConnectors.length && !options.force) {
+      // CI/CD can use the following two commands. Guaranteed to never be stuck.
+      // `firebase dataconnect:sql:migrate --force`: migrate schema regardless of FDC resources.
+      // `firebase deploy --only dataconnect --force`: deploy FDC resources regardless of SQL schema.
       const cmd = suggestedCommand(serviceName, invalidConnectors);
       throw new FirebaseError(
         `Command aborted. Try deploying compatible connectors first with ${clc.bold(cmd)}`,
@@ -88,7 +91,7 @@ export async function migrateSchema(args: {
       });
     }
 
-    if (invalidConnectors.length) {
+    if (shouldDeleteInvalidConnectors) {
       await deleteInvalidConnectors(invalidConnectors);
     }
     // Then, try to upsert schema again. If there still is an error, just throw it now
@@ -188,7 +191,7 @@ async function promptForSchemaMigration(
 ): Promise<"none" | "safe" | "all"> {
   displaySchemaChanges(err);
   if (!options.nonInteractive) {
-    // Always prompt in interactive mode. Desturctive migrations are too potentially dangerous to not prompt for with --force
+    // Always prompt in interactive mode. Destructive migrations are too potentially dangerous to not prompt for with --force
     const choices = err.destructive
       ? [
           { name: "Execute all changes (including destructive changes)", value: "all" },
@@ -234,15 +237,19 @@ async function promptForInvalidConnectorError(
   }
   displayInvalidConnectors(invalidConnectors);
   if (validateOnly) {
+    // Only delete connectors if they will be immediately re-created. So only in `firebase deploy`
     return false;
+  } else if (options.force) {
+    // `firebase deploy --force` always suppress invalid connector errors.
+    return true;
   } else if (
-    options.force ||
-    (!options.nonInteractive &&
-      (await confirm({
-        ...options,
-        message: "Would you like to delete and recreate these connectors?",
-      })))
+    !options.nonInteractive &&
+    (await confirm({
+      ...options,
+      message: "Would you like to delete and recreate these connectors?",
+    }))
   ) {
+    // `firebase deploy` prompts whether to delete invalid connectors.
     return true;
   }
   return false;
